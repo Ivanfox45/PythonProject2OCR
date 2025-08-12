@@ -5,11 +5,12 @@ files, sends each page to the Yandex Cloud Vision API and saves the
 recognised text into separate DOCX files.
 
 Usage:
-    python yandex_ocr.py INPUT_PATH [--output-dir DIR]
+    python yandex_ocr.py [INPUT_PATH] [--output-dir DIR]
 
 The IAM token and folder ID are read from the environment variables
-`YANDEX_IAM_TOKEN` and `YANDEX_FOLDER_ID` respectively. They can also be
-provided explicitly via command line arguments.
+`YANDEX_IAM_TOKEN` and `YANDEX_FOLDER_ID` respectively. If any of these
+values or the input path are missing, the script will ask for them
+interactively when run.
 """
 
 from __future__ import annotations
@@ -148,19 +149,57 @@ def process_file(input_file: Path, output_docx: Path, tmp_dir: Path, iam_token: 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run OCR using Yandex Cloud Vision API")
-    parser.add_argument("input_path", type=Path, help="Path to image/PDF or directory with files")
-    parser.add_argument("--output-dir", type=Path, default=Path("result"), help="Directory to save result DOCX files")
-    parser.add_argument("--tmp-dir", type=Path, default=Path("result") / "tmp", help="Temporary directory base")
-    parser.add_argument("--iam-token", default=os.getenv("YANDEX_IAM_TOKEN"), help="Yandex IAM token")
-    parser.add_argument("--folder-id", default=os.getenv("YANDEX_FOLDER_ID"), help="Yandex Cloud folder ID")
+    parser.add_argument(
+        "input_path",
+        nargs="?",
+        type=Path,
+        help="Path to image/PDF or directory with files",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("result"),
+        help="Directory to save result DOCX files",
+    )
+    parser.add_argument(
+        "--tmp-dir",
+        type=Path,
+        default=Path("result") / "tmp",
+        help="Temporary directory base",
+    )
+    parser.add_argument(
+        "--iam-token",
+        default=os.getenv("YANDEX_IAM_TOKEN"),
+        help="Yandex IAM token",
+    )
+    parser.add_argument(
+        "--folder-id",
+        default=os.getenv("YANDEX_FOLDER_ID"),
+        help="Yandex Cloud folder ID",
+    )
     return parser.parse_args()
+
+
+def prompt_missing(value: str | None, prompt: str, secret: bool = False) -> str:
+    """Return *value* or interactively ask the user for it."""
+    if value:
+        return value
+    if secret:
+        import getpass
+
+        return getpass.getpass(prompt)
+    return input(prompt).strip()
 
 
 def main() -> None:
     args = parse_args()
 
-    if not args.iam_token or not args.folder_id:
-        raise SystemExit("IAM token and folder ID must be provided via arguments or environment variables")
+    if args.input_path is None:
+        path_str = prompt_missing(None, "Enter path to image/PDF or directory: ")
+        args.input_path = Path(path_str or ".")
+
+    args.iam_token = prompt_missing(args.iam_token, "Enter Yandex IAM token: ", secret=True)
+    args.folder_id = prompt_missing(args.folder_id, "Enter Yandex folder ID: ")
 
     files = find_input_files(args.input_path)
     if not files:
