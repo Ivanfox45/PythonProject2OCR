@@ -7,10 +7,10 @@ recognised text into separate DOCX files.
 Usage:
     python yandex_ocr.py [INPUT_PATH] [--output-dir DIR]
 
-The IAM token and folder ID are read from the environment variables
-`YANDEX_IAM_TOKEN` and `YANDEX_FOLDER_ID` respectively. If any of these
-values or the input path are missing, the script will ask for them
-interactively when run.
+If the IAM token is missing it is automatically requested from Yandex
+Cloud using the built-in OAuth token. A default folder ID is embedded in
+the script and may be overridden via command line or environment
+variable.
 """
 
 from __future__ import annotations
@@ -30,6 +30,25 @@ from PIL import Image, ImageEnhance
 import logging
 import sys
 
+OAUTH_TOKEN = os.getenv(
+    "YANDEX_OAUTH_TOKEN",
+    "y0__xDcirSgqveAAhjB3RMg69yB-ROiJgcc6EUOSHCTjlfOBUBzXPo3Kw",
+)
+DEFAULT_FOLDER_ID = "b1gejpaoh25hcp76j3f5"
+
+
+def fetch_iam_token(oauth_token: str = OAUTH_TOKEN) -> str:
+    """Request a short-lived IAM token from Yandex Cloud."""
+    url = "https://iam.api.cloud.yandex.net/iam/v1/tokens"
+    headers = {"Content-Type": "application/json"}
+    data = {"yandexPassportOauthToken": oauth_token}
+    try:
+        resp = requests.post(url, headers=headers, json=data, timeout=30)
+        resp.raise_for_status()
+        return resp.json().get("iamToken", "")
+    except Exception:
+        logging.exception("Failed to obtain IAM token")
+        return ""
 
 def preprocess_image(path: Path, tmp_dir: Path) -> Path:
     """Improve image quality for OCR and save into *tmp_dir*.
@@ -88,7 +107,7 @@ def ocr_image(path: Path, iam_token: str, folder_id: str) -> str:
         "analyze_specs": [
             {
                 "content": img_base64,
-                "features": [{"type": "DOCUMENT_TEXT_DETECTION"}],
+                "features": [{"type": "TEXT_DETECTION"}],
             }
         ],
     }
@@ -221,16 +240,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--folder-id",
-        default=os.getenv("YANDEX_FOLDER_ID"),
+        default=os.getenv("YANDEX_FOLDER_ID") or DEFAULT_FOLDER_ID,
         help="Yandex Cloud folder ID",
     )
     return parser.parse_args()
 
 
 def collect_gui_args(args: argparse.Namespace) -> argparse.Namespace:
-    """Collect missing arguments using a simple Tk based GUI."""
+    """Collect missing path arguments using a simple Tk based GUI."""
     import tkinter as tk
-    from tkinter import filedialog, simpledialog
+    from tkinter import filedialog
 
     root = tk.Tk()
     root.withdraw()
@@ -248,16 +267,6 @@ def collect_gui_args(args: argparse.Namespace) -> argparse.Namespace:
         if out_dir:
             args.output_dir = Path(out_dir)
 
-    if not args.iam_token:
-        args.iam_token = simpledialog.askstring(
-            "IAM token", "Enter Yandex IAM token", show="*"
-        ) or ""
-
-    if not args.folder_id:
-        args.folder_id = simpledialog.askstring(
-            "Folder ID", "Enter Yandex folder ID"
-        ) or ""
-
     root.destroy()
     return args
 
@@ -266,13 +275,13 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s", stream=sys.stdout)
     args = parse_args()
 
-    # When any of the required parameters are missing, request them via GUI
-    if (
-        args.input_path is None
-        or not args.iam_token
-        or not args.folder_id
-    ):
+    if args.input_path is None:
         args = collect_gui_args(args)
+
+    if not args.iam_token:
+        args.iam_token = fetch_iam_token()
+        if not args.iam_token:
+            raise SystemExit("Could not obtain IAM token")
 
     try:
         files = find_input_files(args.input_path)
