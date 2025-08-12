@@ -1,3 +1,4 @@
+# python
 """Utility for performing OCR using Yandex Cloud Vision API.
 
 The script accepts an input image, PDF or a directory containing such
@@ -21,7 +22,7 @@ import os
 import io
 import shutil
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any, Optional, Tuple
 
 import requests
 from docx import Document
@@ -30,15 +31,17 @@ from PIL import Image, ImageEnhance
 import logging
 import sys
 
-OAUTH_TOKEN = os.getenv(
-    "YANDEX_OAUTH_TOKEN",
-    "y0__xDcirSgqveAAhjB3RMg69yB-ROiJgcc6EUOSHCTjlfOBUBzXPo3Kw",
-)
-DEFAULT_FOLDER_ID = "b1gejpaoh25hcp76j3f5"
+# Secrets должны приходить из переменных окружения или CLI-параметров.
+# Плейсхолдеры не препятствуют запуску, но потребуют явного ввода значений.
+OAUTH_TOKEN = os.getenv("YANDEX_OAUTH_TOKEN", "")
+DEFAULT_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID", "")
 
 
 def fetch_iam_token(oauth_token: str = OAUTH_TOKEN) -> str:
     """Request a short-lived IAM token from Yandex Cloud."""
+    if not oauth_token:
+        # Нет OAuth — просто возвращаем пусто, без «ошибки»
+        return ""
     url = "https://iam.api.cloud.yandex.net/iam/v1/tokens"
     headers = {"Content-Type": "application/json"}
     data = {"yandexPassportOauthToken": oauth_token}
@@ -49,6 +52,7 @@ def fetch_iam_token(oauth_token: str = OAUTH_TOKEN) -> str:
     except Exception:
         logging.exception("Failed to obtain IAM token")
         return ""
+
 
 def preprocess_image(path: Path, tmp_dir: Path) -> Path:
     """Improve image quality for OCR and save into *tmp_dir*.
@@ -81,9 +85,40 @@ def preprocess_image(path: Path, tmp_dir: Path) -> Path:
     return tmp_path
 
 
-def ocr_image(path: Path, iam_token: str, folder_id: str) -> str:
+def _extract_text_from_pages(pages: List[Dict[str, Any]]) -> str:
+    """Helper to build text from Vision pages structure."""
+    text_lines: List[str] = []
+    for page in pages or []:
+        for block in page.get("blocks", []):
+            for line in block.get("lines", []):
+                words = [w.get("text", "") for w in line.get("words", []) if w.get("text")]
+                if words:
+                    text_lines.append(" ".join(words))
+    return "\n".join(text_lines).strip()
+
+
+def _build_auth_headers(iam_token: Optional[str], api_key: Optional[str]) -> Tuple[Dict[str, str], str]:
+    """Return headers and auth mode string."""
+    if iam_token:
+        return {"Authorization": f"Bearer {iam_token}", "Content-Type": "application/json"}, "iam"
+    if api_key:
+        return {"Authorization": f"Api-Key {api_key}", "Content-Type": "application/json"}, "api_key"
+    return {}, "none"
+
+
+def ocr_image(path: Path, iam_token: Optional[str], folder_id: str, api_key: Optional[str] = None) -> str:
     """Send an image to the Yandex Vision API and return extracted text."""
     logging.info("Requesting OCR for %s", path)
+
+    headers, mode = _build_auth_headers(iam_token, api_key)
+    if mode == "none":
+        logging.error("No credentials provided. Use --iam-token or --api-key (or set env vars).")
+        return "[auth error: no credentials]"
+
+    if not folder_id:
+        logging.error("Folder ID is not set. Provide --folder-id or set YANDEX_FOLDER_ID.")
+        return "[config error: no folder id]"
+
     if path.stat().st_size > 1_000_000:
         logging.debug("Reducing size of %s before upload", path)
         img = Image.open(path)
@@ -101,19 +136,25 @@ def ocr_image(path: Path, iam_token: str, folder_id: str) -> str:
         img_base64 = base64.b64encode(fh.read()).decode("utf-8")
 
     url = "https://vision.api.cloud.yandex.net/vision/v1/batchAnalyze"
-    headers = {"Authorization": f"Bearer {iam_token}", "Content-Type": "application/json"}
     payload = {
         "folderId": folder_id,
         "analyze_specs": [
             {
                 "content": img_base64,
-                "features": [{"type": "TEXT_DETECTION"}],
+                "features": [
+                    {
+                        "type": "TEXT_DETECTION",
+                        "text_detection_config": {
+                            "language_codes": ["*"]
+                        },
+                    }
+                ],
             }
         ],
     }
 
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
     except Exception:
         logging.exception("HTTP request failed for %s", path)
         return "[request error]"
@@ -128,16 +169,60 @@ def ocr_image(path: Path, iam_token: str, folder_id: str) -> str:
 
     try:
         result = resp.json()
-        pages = result["results"][0]["results"][0]["textDetection"]["pages"]
-        text = []
-        for page in pages:
-            for block in page.get("blocks", []):
-                for line in block.get("lines", []):
-                    words = [word.get("text", "") for word in line.get("words", [])]
-                    text.append(" ".join(words))
-        return "\n".join(text).strip()
+    except Exception:
+        logging.exception("Response is not JSON for %s", path)
+        return "[response parse error]"
+
+    try:
+        # Robust traversal of results
+        all_text_parts: List[str] = []
+        root_results = result.get("results", [])
+        if not root_results:
+            logging.warning("No 'results' in API response for %s: %s", path, result)
+            return "[no results]"
+
+        for spec_idx, spec in enumerate(root_results):
+            inner_results = spec.get("results", [])
+            if not inner_results:
+                logging.warning("Empty 'results' for spec %d in %s", spec_idx, path)
+                continue
+
+            for item_idx, item in enumerate(inner_results):
+                if "error" in item:
+                    err = item.get("error", {})
+                    code = err.get("code")
+                    msg = err.get("message")
+                    logging.error("API error for %s (spec %d item %d): %s %s", path, spec_idx, item_idx, code, msg)
+                    continue
+
+                pages = None
+                if "textDetection" in item:
+                    pages = item["textDetection"].get("pages", [])
+                elif "textAnnotation" in item:
+                    pages = item["textAnnotation"].get("pages", [])
+
+                if pages:
+                    text_part = _extract_text_from_pages(pages)
+                    if text_part:
+                        all_text_parts.append(text_part)
+                else:
+                    logging.warning(
+                        "No 'pages' in item for %s (spec %d item %d). Keys: %s",
+                        path, spec_idx, item_idx, list(item.keys())
+                    )
+
+        final_text = "\n".join(p for p in all_text_parts if p).strip()
+        if not final_text:
+            logging.warning("No text extracted for %s. Response summary keys: %s", path, list(result.keys()))
+            return "[no text]"
+        return final_text
+
     except Exception:
         logging.exception("Failed to extract text for %s", path)
+        try:
+            logging.debug("Raw response for %s: %s", path, resp.text[:2000])
+        except Exception:
+            pass
         return "[text extraction error]"
 
 
@@ -153,9 +238,6 @@ def resolve_input(path: Path) -> Path:
     if path.exists():
         return path
 
-    # Only search the current directory tree when the user supplied just a
-    # name (no parent directories). This prevents a long scan when an
-    # absolute or relative path is wrong or contains drive letters/quotes.
     if len(path.parts) == 1:
         matches = list(Path.cwd().rglob(path.name))
         if matches:
@@ -165,12 +247,7 @@ def resolve_input(path: Path) -> Path:
 
 
 def find_input_files(path: Path) -> List[Path]:
-    """Return a list of image/PDF files found under *path*.
-
-    *path* may point directly to a file or to a directory. Supported file
-    extensions are PDF and common image formats.
-    """
-
+    """Return a list of image/PDF files found under *path*."""
     path = resolve_input(path)
     if path.is_file():
         logging.info("Input is a single file: %s", path)
@@ -183,7 +260,7 @@ def find_input_files(path: Path) -> List[Path]:
     return files
 
 
-def process_file(input_file: Path, output_docx: Path, tmp_dir: Path, iam_token: str, folder_id: str) -> None:
+def process_file(input_file: Path, output_docx: Path, tmp_dir: Path, iam_token: Optional[str], folder_id: str, api_key: Optional[str]) -> None:
     """Process *input_file* and save the recognised text to *output_docx*."""
     logging.info("Processing file %s", input_file)
     images: List[Path] = []
@@ -201,7 +278,7 @@ def process_file(input_file: Path, output_docx: Path, tmp_dir: Path, iam_token: 
     total = len(images)
     for i, img in enumerate(images, start=1):
         logging.info("OCR %s page %d/%d", input_file.name, i, total)
-        text = ocr_image(img, iam_token, folder_id)
+        text = ocr_image(img, iam_token, folder_id, api_key=api_key)
         document.add_heading(f"Page {i}", level=2)
         document.add_paragraph(text or "[no text]")
         print(f"\r{input_file.name}: {i}/{total} pages processed", end="", flush=True)
@@ -239,6 +316,11 @@ def parse_args() -> argparse.Namespace:
         help="Yandex IAM token",
     )
     parser.add_argument(
+        "--api-key",
+        default=os.getenv("YANDEX_API_KEY"),
+        help="Yandex Cloud API Key (alternative to IAM token)",
+    )
+    parser.add_argument(
         "--folder-id",
         default=os.getenv("YANDEX_FOLDER_ID") or DEFAULT_FOLDER_ID,
         help="Yandex Cloud folder ID",
@@ -271,6 +353,25 @@ def collect_gui_args(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def _resolve_credentials(args: argparse.Namespace) -> Tuple[Optional[str], Optional[str]]:
+    """Determine which credentials to use: IAM token or API key."""
+    iam_token = args.iam_token
+    api_key = args.api_key
+
+    # Priority: explicit IAM -> explicit API key -> OAuth->IAM
+    if iam_token:
+        return iam_token, None
+    if api_key:
+        return None, api_key
+
+    # Try to obtain IAM via OAuth, if provided
+    iam_via_oauth = fetch_iam_token()
+    if iam_via_oauth:
+        return iam_via_oauth, None
+
+    return None, None
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s", stream=sys.stdout)
     args = parse_args()
@@ -278,10 +379,15 @@ def main() -> None:
     if args.input_path is None:
         args = collect_gui_args(args)
 
-    if not args.iam_token:
-        args.iam_token = fetch_iam_token()
-        if not args.iam_token:
-            raise SystemExit("Could not obtain IAM token")
+    iam_token, api_key = _resolve_credentials(args)
+    if not iam_token and not api_key:
+        raise SystemExit(
+            "No credentials provided. Use one of:\n"
+            "  --iam-token <IAM_TOKEN>\n"
+            "  --api-key <API_KEY>\n"
+            "or set env vars YANDEX_IAM_TOKEN / YANDEX_API_KEY. "
+            "Optionally set YANDEX_OAUTH_TOKEN to auto-fetch IAM."
+        )
 
     try:
         files = find_input_files(args.input_path)
@@ -290,12 +396,15 @@ def main() -> None:
     if not files:
         raise SystemExit("No input files found")
 
+    if not args.folder_id:
+        raise SystemExit("Folder ID is required. Provide --folder-id or set YANDEX_FOLDER_ID.")
+
     for idx, file in enumerate(files, start=1):
         logging.info("Processing file %d/%d", idx, len(files))
         tmp_dir = args.tmp_dir / file.stem
         output_docx = args.output_dir / file.stem / f"{file.stem}.docx"
         try:
-            process_file(file, output_docx, tmp_dir, args.iam_token, args.folder_id)
+            process_file(file, output_docx, tmp_dir, iam_token, args.folder_id, api_key)
             logging.info("Saved OCR result for %s to %s", file, output_docx)
         except Exception:
             logging.exception("Failed to process %s", file)
