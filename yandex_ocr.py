@@ -31,27 +31,11 @@ from PIL import Image, ImageEnhance
 import logging
 import sys
 
-# Secrets должны приходить из переменных окружения или CLI-параметров.
+import api
+
+# Secrets должны приходить из переменных окружения или CLI‑параметров.
 # Плейсхолдеры не препятствуют запуску, но потребуют явного ввода значений.
-OAUTH_TOKEN = os.getenv("YANDEX_OAUTH_TOKEN", "")
-DEFAULT_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID", "")
-
-
-def fetch_iam_token(oauth_token: str = OAUTH_TOKEN) -> str:
-    """Request a short-lived IAM token from Yandex Cloud."""
-    if not oauth_token:
-        # Нет OAuth — просто возвращаем пусто, без «ошибки»
-        return ""
-    url = "https://iam.api.cloud.yandex.net/iam/v1/tokens"
-    headers = {"Content-Type": "application/json"}
-    data = {"yandexPassportOauthToken": oauth_token}
-    try:
-        resp = requests.post(url, headers=headers, json=data, timeout=30)
-        resp.raise_for_status()
-        return resp.json().get("iamToken", "")
-    except Exception:
-        logging.exception("Failed to obtain IAM token")
-        return ""
+DEFAULT_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID", "b1gejpaoh25hcp76j3f5")
 
 
 def preprocess_image(path: Path, tmp_dir: Path) -> Path:
@@ -364,8 +348,8 @@ def _resolve_credentials(args: argparse.Namespace) -> Tuple[Optional[str], Optio
     if api_key:
         return None, api_key
 
-    # Try to obtain IAM via OAuth, if provided
-    iam_via_oauth = fetch_iam_token()
+    # Try to obtain IAM via OAuth using helper module
+    iam_via_oauth = api.get_iam_token()
     if iam_via_oauth:
         return iam_via_oauth, None
 
