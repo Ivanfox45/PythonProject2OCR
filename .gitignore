@@ -1,0 +1,9 @@
+result/
+split_pages/
+ocr_pages/
+*.docx
+__pycache__/
+*.pyc
+IAM token.py
+yandex cloud api*.py
+
