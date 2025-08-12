@@ -10,7 +10,7 @@ import time
 
 
 # === НАСТРОЙ ЭТИ ПАРАМЕТРЫ ===
-IAM_TOKEN = 't1.9euelZqOlpqUzsvLncqPnZiUmc2Nze3rnpWak56XzsaWzZGJnpSMxorMzJPl8_cEO2E7-e8NLSh1_d3z90RpXjv57w0tKHX9zef1656Vmoqdx8vMns2OnYyJmpfKy4vO7_zF656Vmoqdx8vMns2OnYyJmpfKy4vO.ohCeytxtRHRJHNDl63No-kqf2bt-SrWuLuB6q6SZaK4OTIiMNtnSqJVKagsBRmJ0MiheUNs3ev50Vk8Y7ZPNCQ'
+IAM_TOKEN = 't1.9euelZqTzJGakJyeyMqbxpuSksaUlO3rnpWak56XzsaWzZGJnpSMxorMzJPl8_d2DBQ7-e8rC3Y2_d3z9zY7ETv57ysLdjb9zef1656VmseMkY7IjJjKk46Xk82RnsyY7_zF656VmseMkY7IjJjKk46Xk82RnsyY.O5n-qH-R-Ez7ayB4g_qroxa4_MCewIS9A0yw3TXsFnUiZA9qr3_BcaRIWYt8n98T3ThIAQC9mKzn9vI9lIGsCg'
 FOLDER_ID = 'b1gejpaoh25hcp76j3f5'
 PDF_PATH = r'C:\Users\ivan_\PycharmProjects\PythonProject2\Протокол совещания руковод. ПЧУ г. Санкт-Петербург-разб.pdf'
 

@@ -1,0 +1,4 @@
+requests
+python-docx
+pdf2image
+pillow
