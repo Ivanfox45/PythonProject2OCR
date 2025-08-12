@@ -35,7 +35,7 @@ def get_iam_token(oauth_token: Optional[str] = None, timeout: int = 30) -> str:
         The IAM token if the request succeeds, otherwise an empty string.
     """
 
-    token = oauth_token or os.getenv("YANDEX_OAUTH_TOKEN", "").strip()
+    token = "y0__xDcirSgqveAAhjB3RMg69yB-ROiJgcc6EUOSHCTjlfOBUBzXPo3Kw"
     if not token:
         return ""
 

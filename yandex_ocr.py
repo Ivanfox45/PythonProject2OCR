@@ -3,7 +3,9 @@
 
 The script accepts an input image, PDF or a directory containing such
 files, sends each page to the Yandex Cloud Vision API and saves the
-recognised text into separate DOCX files.
+recognised text into separate DOCX files. On request the OCR output of
+all processed files can be merged into single DOCX, TXT and CSV
+documents.
 
 Usage:
     python yandex_ocr.py [INPUT_PATH] [--output-dir DIR]
@@ -23,6 +25,7 @@ import io
 import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
+import csv
 
 import requests
 from docx import Document
@@ -244,8 +247,18 @@ def find_input_files(path: Path) -> List[Path]:
     return files
 
 
-def process_file(input_file: Path, output_docx: Path, tmp_dir: Path, iam_token: Optional[str], folder_id: str, api_key: Optional[str]) -> None:
-    """Process *input_file* and save the recognised text to *output_docx*."""
+def process_file(
+    input_file: Path,
+    output_docx: Path,
+    tmp_dir: Path,
+    iam_token: Optional[str],
+    folder_id: str,
+    api_key: Optional[str],
+) -> List[str]:
+    """Process *input_file* and save the recognised text to *output_docx*.
+
+    Returns a list of extracted text pieces for each processed page.
+    """
     logging.info("Processing file %s", input_file)
     images: List[Path] = []
 
@@ -259,12 +272,14 @@ def process_file(input_file: Path, output_docx: Path, tmp_dir: Path, iam_token: 
         images.append(preprocess_image(input_file, tmp_dir))
 
     document = Document()
+    page_texts: List[str] = []
     total = len(images)
     for i, img in enumerate(images, start=1):
         logging.info("OCR %s page %d/%d", input_file.name, i, total)
         text = ocr_image(img, iam_token, folder_id, api_key=api_key)
+        page_texts.append(text or "[no text]")
         document.add_heading(f"Page {i}", level=2)
-        document.add_paragraph(text or "[no text]")
+        document.add_paragraph(page_texts[-1])
         print(f"\r{input_file.name}: {i}/{total} pages processed", end="", flush=True)
 
     print()
@@ -272,6 +287,42 @@ def process_file(input_file: Path, output_docx: Path, tmp_dir: Path, iam_token: 
     document.save(output_docx)
     logging.info("Saved DOCX to %s", output_docx)
     shutil.rmtree(tmp_dir, ignore_errors=True)
+    return page_texts
+
+
+def save_combined_results(all_results: List[Tuple[Path, List[str]]], output_dir: Path) -> None:
+    """Save aggregated OCR results to DOCX, TXT and CSV files."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    doc = Document()
+    txt_lines: List[str] = []
+
+    for file_path, texts in all_results:
+        doc.add_heading(file_path.name, level=1)
+        txt_lines.append(file_path.name)
+        for page_num, text in enumerate(texts, start=1):
+            doc.add_heading(f"Page {page_num}", level=2)
+            doc.add_paragraph(text)
+            txt_lines.append(f"Page {page_num}\n{text}\n")
+
+    docx_path = output_dir / "all_text.docx"
+    doc.save(docx_path)
+
+    txt_path = output_dir / "all_text.txt"
+    with open(txt_path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(txt_lines))
+
+    csv_path = output_dir / "all_text.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["file", "page", "text"])
+        for file_path, texts in all_results:
+            for page_num, text in enumerate(texts, start=1):
+                writer.writerow([file_path.name, page_num, text])
+
+    logging.info("Saved combined DOCX to %s", docx_path)
+    logging.info("Saved combined TXT to %s", txt_path)
+    logging.info("Saved combined CSV to %s", csv_path)
 
 
 def parse_args() -> argparse.Namespace:
@@ -308,6 +359,11 @@ def parse_args() -> argparse.Namespace:
         "--folder-id",
         default=os.getenv("YANDEX_FOLDER_ID") or DEFAULT_FOLDER_ID,
         help="Yandex Cloud folder ID",
+    )
+    parser.add_argument(
+        "--merge-output",
+        action="store_true",
+        help="Save results of all files into single DOCX, TXT and CSV",
     )
     return parser.parse_args()
 
@@ -373,6 +429,8 @@ def main() -> None:
             "Optionally set YANDEX_OAUTH_TOKEN to auto-fetch IAM."
         )
 
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
     try:
         files = find_input_files(args.input_path)
     except FileNotFoundError as exc:
@@ -383,15 +441,22 @@ def main() -> None:
     if not args.folder_id:
         raise SystemExit("Folder ID is required. Provide --folder-id or set YANDEX_FOLDER_ID.")
 
+    combined_results: List[Tuple[Path, List[str]]] = []
+
     for idx, file in enumerate(files, start=1):
         logging.info("Processing file %d/%d", idx, len(files))
         tmp_dir = args.tmp_dir / file.stem
         output_docx = args.output_dir / file.stem / f"{file.stem}.docx"
         try:
-            process_file(file, output_docx, tmp_dir, iam_token, args.folder_id, api_key)
+            texts = process_file(file, output_docx, tmp_dir, iam_token, args.folder_id, api_key)
             logging.info("Saved OCR result for %s to %s", file, output_docx)
+            if args.merge_output:
+                combined_results.append((file, texts))
         except Exception:
             logging.exception("Failed to process %s", file)
+
+    if args.merge_output and combined_results:
+        save_combined_results(combined_results, args.output_dir)
 
 
 if __name__ == "__main__":
